@@ -1,0 +1,193 @@
+---
+title: 'Consulting project 1: Data preparation'
+output:
+  html_document:
+    df_print: paged
+---
+
+Load packages
+```{r, message = FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+Load the data
+```{r, message = FALSE}
+grid <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/grid2NoMRN.xlsx")
+mort <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/mortNoMRN.xlsx")
+proc <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/procGroupedNoMRN.xlsx")
+procLat <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/procLatNoMRN.xlsx")
+```
+
+
+
+## Identify the primary WM patients and the primary revascularization patients
+
+**Inclusion/Exclusion**: We only want to **include** the patients that are in `grid2NoMRN.xlsx` because those are the patients that had each dimension of desired information (qualifying TP/ABI and Rutherford score, imagining and extractble disease anatomy information). We are **excluding** patients that do not get any CLTI-related procedures after their CLTI diagnosis (e.g. patients that went to Duke for treatment).
+
+  1. For the procedure file, filter out patients that aren't in `grid2NoMRN.xlsx`. 
+  2. For the procedure file, filter out the procedures labeled as "other" (these are procedures unrelated to CLTI)
+  3. For the procedure file, select and set the type of the variables that we need and remove the ones we don't
+    * Need: `CLI_DX_DATE`, `PROCEDURE_DATE`, `DAYS_FROM_CLI_DX`, `procGroup`, `ptNum`
+  4. For the procedure file, filter out procedures that occur more than 10 days before the CLTI diagnosis date
+
+__Definition__ A patient is a primary wound management patient if they only receive wound management during the first 30 days after the index procedure after the CLI_DX_DATE. A patient is a primary revascularization patient if they receive a revascularization within the first 10 days after the index procedure after the CLI_DX_DATE.
+
+```{r, message = FALSE}
+# Get the ptNums for the unilats in grid2.xlsx
+grid <- grid %>% mutate(ptSide = paste0(ptNum, hemodynamicLaterality))
+
+
+# Find the primary WM and primary revasc patients
+primaryProc <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>% 
+  filter(ptSide %in% grid$ptSide) %>%  # keep unilat patients in grid2
+  filter(procGroup != "other") %>% # procedures labeled as "other" do not apply to us
+  select(ptNum, ptSide, CLI_DX_DATE, PROCEDURE_DATE, DAYS_FROM_CLI_DX, procGroup) %>% # Select the columns that matter to us
+  mutate(ptNum = as.character(ptNum), # Fix the variable types (yay defense!)
+         ptSide = as.character(ptSide), 
+         CLI_DX_DATE = ymd(CLI_DX_DATE),
+         PROCEDURE_DATE = ymd(PROCEDURE_DATE),
+         DAYS_FROM_CLI_DX = as.numeric(DAYS_FROM_CLI_DX),
+         procGroup = as.character(procGroup)) %>%
+  filter(DAYS_FROM_CLI_DX >= -10) %>% # Remove procedures from before the CLI_DX_DATE
+  group_by(ptSide) %>%
+  mutate(indexProcedureFlag = if_else(DAYS_FROM_CLI_DX == min(DAYS_FROM_CLI_DX), 1, 0), # Flag the index procedures
+         indexProcedureDate = if_else(indexProcedureFlag == 1, CLI_DX_DATE, as_date(NA)), # Define the index period
+         indexProcedureDatePlus30 = if_else(indexProcedureFlag == 1, CLI_DX_DATE + days(30), as_date(NA)),
+         indexProcedureDatePlus10 = if_else(indexProcedureFlag == 1, CLI_DX_DATE + days(10), as_date(NA))) %>%
+  arrange(ptSide, DAYS_FROM_CLI_DX) %>%
+  fill(indexProcedureDate, .direction = "down") %>%
+  fill(indexProcedureDatePlus30, .direction = "down") %>%
+  fill(indexProcedureDatePlus10,.direction = "down") %>%
+  mutate(inIndexPeriodFlag = if_else(PROCEDURE_DATE <= indexProcedureDatePlus30, 1, 0)) %>% # Flag procedures in the index period
+  mutate(withinTenDaysOfIndexProcedure = if_else(PROCEDURE_DATE <= indexProcedureDatePlus10, 1, 0)) %>%
+  filter(inIndexPeriodFlag == 1) %>%
+  select(ptSide, ptNum,  withinTenDaysOfIndexProcedure, procGroup, inIndexPeriodFlag) %>%
+  mutate(procGroupReduced = if_else((procGroup == "Endovascular" | procGroup == "Open") & withinTenDaysOfIndexProcedure == 1, "Revasc", "Unknown")) %>%
+  select(-withinTenDaysOfIndexProcedure) %>%
+  distinct() %>%
+  pivot_wider(id_cols = c(ptSide, ptNum, procGroupReduced),
+              names_from = procGroup,
+              values_from = inIndexPeriodFlag) %>%
+   replace_na(list(Endovascular = 0,
+                  Open = 0,
+                  Debridement = 0,
+                  `Major amputation` = 0,
+                  Fasciotomy = 0, 
+                  `Minor amputation` = 0)) %>%
+  mutate(procGroupReduced = if_else((Debridement == 1 | `Minor amputation` == 1) & procGroupReduced == "Unknown", "WM", procGroupReduced)) %>%
+  filter(procGroupReduced != "Unknown") %>%
+  mutate(ones = 1) %>%
+  pivot_wider(id_cols = c(ptSide, ptNum), names_from = procGroupReduced, values_from = ones) %>%
+  replace_na(list(Revasc = 0,
+                  WM = 0)) %>%
+  mutate(primaryProcedure = if_else(Revasc == 1, "Revasc", "WM")) %>%
+  select(ptSide, ptNum, primaryProcedure)
+  
+# Counts of primary procedures
+table(primaryProc$primaryProcedure)
+
+```
+
+## Create the mortality outcomes
+
+```{r, message = FALSE}
+mort2yr <- left_join(primaryProc, mutate(mort, 
+                              ptNum = as.character(ptNum), 
+                              ptSide = paste0(ptNum, hemodynamicLaterality)), 
+          by = c("ptNum", "ptSide")) %>%
+  select(ptSide, ptNum, deathDate, timeToDeathFromStudyStart) %>%
+  mutate(mort2yr = if_else(!is.na(timeToDeathFromStudyStart) & timeToDeathFromStudyStart <= 365*2, 1, 0))
+
+```
+
+## Create the amputation outcome
+
+```{r}
+amp2yr <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>% 
+  filter(ptSide %in% grid$ptSide) %>%  # keep unilat patients in grid2
+  filter(procGroup != "other") %>% # procedures labeled as "other" do not apply to us
+  select(ptNum, ptSide, CLI_DX_DATE, PROCEDURE_DATE, DAYS_FROM_CLI_DX, procGroup) %>% # Select the columns that matter to us
+  mutate(ptNum = as.character(ptNum), # Fix the variable types (yay defense!)
+         ptSide = as.character(ptSide), 
+         CLI_DX_DATE = ymd(CLI_DX_DATE),
+         PROCEDURE_DATE = ymd(PROCEDURE_DATE),
+         DAYS_FROM_CLI_DX = as.numeric(DAYS_FROM_CLI_DX),
+         procGroup = as.character(procGroup)) %>%
+  filter(DAYS_FROM_CLI_DX >= -10) %>% # Remove procedures from before the CLI_DX_DATE
+  group_by(ptSide) %>%
+  mutate(indexProcedureFlag = if_else(DAYS_FROM_CLI_DX == min(DAYS_FROM_CLI_DX), 1, 0), # Flag the index procedures
+         indexProcedureDate = if_else(indexProcedureFlag == 1, CLI_DX_DATE, as_date(NA)), # Define the index period
+         indexProcedureDatePlus30 = if_else(indexProcedureFlag == 1, CLI_DX_DATE + days(30), as_date(NA)),
+         indexProcedureDatePlus10 = if_else(indexProcedureFlag == 1, CLI_DX_DATE + days(10), as_date(NA))) %>%
+  arrange(ptSide, DAYS_FROM_CLI_DX) %>%
+  fill(indexProcedureDate, .direction = "down") %>%
+  fill(indexProcedureDatePlus30, .direction = "down") %>%
+  fill(indexProcedureDatePlus10,.direction = "down") %>%
+  mutate(inIndexPeriodFlag = if_else(PROCEDURE_DATE <= indexProcedureDatePlus30, 1, 0)) %>%
+  filter(procGroup == "Major amputation") %>%
+  mutate(timeToAmputation = PROCEDURE_DATE - indexProcedureDate) %>%
+  filter(timeToAmputation <= years(2)) %>%
+  select(ptNum, ptSide) %>%
+  mutate(majorAmp2yr = 1) %>%
+  distinct()
+
+```
+
+## Create the MACE outcomes
+```{r}
+```
+
+## Merge the outcomes, comorbidities, and procedures
+```{r}
+preAnalyticData <- left_join(primaryProc, mort2yr, by = c("ptNum", "ptSide")) %>%
+  left_join(amp2yr, by = c("ptNum", "ptSide")) %>%
+  left_join(mutate(grid, ptNum = as.character(ptNum)), by = c("ptNum", "ptSide")) %>%
+  replace_na(list(majorAmp2yr = 0, 
+                  RunoffDisease = 0,
+                  InflowDisease = 0,
+                  OutflowDisease = 0)) %>%
+  mutate(RunoffDisease = if_else(RunoffDisease == -50, 0, RunoffDisease),
+         InflowDisease = if_else(InflowDisease == -50, 0, InflowDisease),
+         OutflowDisease = if_else(OutflowDisease == -50, 0, OutflowDisease))
+```
+
+## Reduce down to analytic dataset
+```{r}
+# Select only the vars we need, replace NAs as needed
+preAnalyticData2 <- preAnalyticData %>% select(ptNum, ptSide, # Patient Limb identifiers
+                           primaryProcedure, # primary treatment
+                           CLI_DX_DATE = STUDY_DATE...3, # CLTI diagnosis date
+                           hemodynamicLaterality, InflowDisease,  # Anatomy
+                           OutflowDisease, RunoffDisease,
+                           stentBPG, # previous stent/bpg
+                           maxRutherfordClass, ischemia, # Severity
+                           woundClass, infectionClass,
+                           ANEMIA:CAD, # comorbidities
+                           mort2yr, majorAmp2yr)  
+
+# Combine the rare comorbidities (e.g anemia)
+preAnalyticData2 %>% ungroup() %>% summarise_at(vars(InflowDisease:CAD), sum)
+
+# Remove the infection class
+# Combine anemia
+# Rm cvd complicated
+# Combine hyperlipidemia complicated
+# Remove the wound measures
+# Make the 2yr amp free survival composite measure
+analyticData <- preAnalyticData2 %>%
+  mutate(anyAnemia = if_else(ANEMIA ==1 | `DEFICIENCY ANEMIA-NA` == 1, 1, 0),
+         anyHyperlipidemia = if_else(`HYPERLIPIDEMIA-COMPLICATED` == 1 | `HYPERLIPIDEMIA-NA` == 1, 1, 0)) %>%
+  select(-c(ANEMIA, `DEFICIENCY ANEMIA-NA`, `HYPERLIPIDEMIA-COMPLICATED`, `HYPERLIPIDEMIA-NA`,
+            infectionClass, `CEREBROVASCULAR DISEASE-COMPLICATED`,
+            `WOUND-COMPLICATED`, `WOUND-EXTREMITY`, `WOUND`)) %>%
+  select(ptNum:CAD, anyAnemia, anyHyperlipidemia, mort2yr, majorAmp2yr) %>%
+  mutate(ampFreeSurv2yr = if_else(mort2yr == 0 & majorAmp2yr == 0 , 1, 0))
+
+
+
+  
+readr::write_csv(x = analyticData, path = "analyticData.csv")
+  
+  
+```
