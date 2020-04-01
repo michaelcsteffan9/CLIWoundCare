@@ -40,7 +40,7 @@ grid <- grid %>% mutate(ptSide = paste0(ptNum, hemodynamicLaterality))
 
 # Find the primary WM and primary revasc patients
 primaryProc <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>% 
-  filter(ptSide %in% grid$ptSide) %>%  # keep unilat patients in grid2
+  filter(ptSide %in% grid$ptSide) %>%  # keep patients from grid2 
   filter(procGroup != "other") %>% # procedures labeled as "other" do not apply to us
   select(ptNum, ptSide, CLI_DX_DATE, PROCEDURE_DATE, DAYS_FROM_CLI_DX, procGroup) %>% # Select the columns that matter to us
   mutate(ptNum = as.character(ptNum), # Fix the variable types (yay defense!)
@@ -49,27 +49,29 @@ primaryProc <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>%
          PROCEDURE_DATE = ymd(PROCEDURE_DATE),
          DAYS_FROM_CLI_DX = as.numeric(DAYS_FROM_CLI_DX),
          procGroup = as.character(procGroup)) %>%
-  filter(DAYS_FROM_CLI_DX >= -10) %>% # Remove procedures from before the CLI_DX_DATE
-  group_by(ptSide) %>%
+  filter(DAYS_FROM_CLI_DX >= 0) %>% # Remove procedures from before the CLI_DX_DATE
+  group_by(ptSide) %>% 
   mutate(indexProcedureFlag = if_else(DAYS_FROM_CLI_DX == min(DAYS_FROM_CLI_DX), 1, 0), # Flag the index procedures
-         indexProcedureDate = if_else(indexProcedureFlag == 1, CLI_DX_DATE, as_date(NA)), # Define the index period
-         indexProcedureDatePlus30 = if_else(indexProcedureFlag == 1, CLI_DX_DATE + days(30), as_date(NA)),
-         indexProcedureDatePlus10 = if_else(indexProcedureFlag == 1, CLI_DX_DATE + days(10), as_date(NA))) %>%
+         indexProcedureDate = if_else(indexProcedureFlag == 1, PROCEDURE_DATE, as_date(NA)), # Define the index period
+         indexProcedureDatePlus30 = if_else(indexProcedureFlag == 1, indexProcedureDate + days(30), as_date(NA)),
+         indexProcedureDatePlus10 = if_else(indexProcedureFlag == 1, indexProcedureDate + days(10), as_date(NA)),
+         indexProcedureDatePlus90 = if_else(indexProcedureFlag == 1, indexProcedureDate + days(90), as_date(NA))) %>%
   arrange(ptSide, DAYS_FROM_CLI_DX) %>%
   fill(indexProcedureDate, .direction = "down") %>%
   fill(indexProcedureDatePlus30, .direction = "down") %>%
   fill(indexProcedureDatePlus10,.direction = "down") %>%
-  mutate(inIndexPeriodFlag = if_else(PROCEDURE_DATE <= indexProcedureDatePlus30, 1, 0)) %>% # Flag procedures in the index period
-  mutate(withinTenDaysOfIndexProcedure = if_else(PROCEDURE_DATE <= indexProcedureDatePlus10, 1, 0)) %>%
-  filter(inIndexPeriodFlag == 1) %>%
-  select(ptSide, ptNum,  withinTenDaysOfIndexProcedure, procGroup, inIndexPeriodFlag) %>%
-  mutate(procGroupReduced = if_else((procGroup == "Endovascular" | procGroup == "Open") & withinTenDaysOfIndexProcedure == 1, "Revasc", "Unknown")) %>%
-  select(-withinTenDaysOfIndexProcedure) %>%
+  fill(indexProcedureDatePlus90, .direction = "down") %>%
+  mutate(within30DaysOfIndexProcedureFlag = if_else(PROCEDURE_DATE <= indexProcedureDatePlus30, 1, 0)) %>% # Flag procedures within 30 days of index procedure
+  mutate(within90DaysOfIndexProcedure = if_else(PROCEDURE_DATE <= indexProcedureDatePlus90, 1, 0)) %>%
+  filter(within90DaysOfIndexProcedure == 1) %>% 
+  select(ptSide, ptNum,  within30DaysOfIndexProcedureFlag, within90DaysOfIndexProcedure, procGroup) %>%
+  mutate(procGroupReduced = if_else((procGroup == "Endovascular" | procGroup == "Open") & within30DaysOfIndexProcedureFlag == 1, "Revasc", "Unknown")) %>%
+  dplyr::select(-within30DaysOfIndexProcedureFlag) %>%
   distinct() %>%
   pivot_wider(id_cols = c(ptSide, ptNum, procGroupReduced),
               names_from = procGroup,
-              values_from = inIndexPeriodFlag) %>%
-   replace_na(list(Endovascular = 0,
+              values_from = within90DaysOfIndexProcedure) %>%
+  replace_na(list(Endovascular = 0,
                   Open = 0,
                   Debridement = 0,
                   `Major amputation` = 0,
@@ -171,7 +173,7 @@ preAnalyticData2 %>% ungroup() %>% summarise_at(vars(InflowDisease:CAD), sum)
 
 # Remove the infection class
 # Combine anemia
-# Rm cvd complicated
+# Rm cerebrovascular disease complicated
 # Combine hyperlipidemia complicated
 # Remove the wound measures
 # Make the 2yr amp free survival composite measure
