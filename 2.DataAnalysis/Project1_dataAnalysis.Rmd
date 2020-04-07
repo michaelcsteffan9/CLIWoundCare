@@ -1,0 +1,104 @@
+---
+title: "Project 1 Analysis"
+author: "Group 6"
+date: "4/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+source("aim2.R")
+#########################################################
+## Libraries
+#########################################################
+library(ctmle)
+library(DynTxRegime)
+library(tidyverse)
+library(magrittr)
+library(readxl)
+library(lubridate)
+library(here)
+here <- here::here
+
+#########################################################
+## Data
+#########################################################
+
+# You will need to change this to your path
+# So that we don't have to comment out other people's directories, I'm putting some conditional logic
+cur.directory <- here()
+if(str_detect(string = cur.directory, pattern = "jsperger")){
+  data.dir.path <- "/Users/jsperger/Dropbox/Consulting Project/Data/"
+}
+if(str_detect(string = cur.directory, pattern = "nikki")){
+  data.dir.path <- "Fix me/Dropbox/Consulting Project/Data/"
+}
+if(str_detect(string = cur.directory, pattern = "haley")){
+  data.dir.path <- "Fix me/Dropbox/Consulting Project/Data/"
+}
+if(str_detect(string = cur.directory, pattern = "michael")){
+  data.dir.path <- "Fix me/Dropbox/Consulting Project/Data/"
+}
+if(exists("data.dir.path") == FALSE | str_detect(data.dir.path, "Fix me") == TRUE) stop("Fix data directory specification")
+
+clti <- read_csv(file = paste0(data.dir.path, "analyticData.csv"))
+clti %<>%  mutate_at(.vars = "hemodynamicLaterality", ~if_else(. == "Left", 1, 0)) %>% 
+  mutate(primaryTreatmentInt = if_else(primaryProcedure == "WM", 1, 0) )
+
+```
+
+```{r vars}
+id.var.names <- c("ptNum", "ptSide", "CLI_DX_DATE")
+
+outcome.var.names <- c("ampFreeSurv2yr",
+                       "majorAmp2yr",
+                       "mort2yr")
+
+disease.var.names <- c("maxRutherfordClass",
+                  "woundClass",
+                  "ischemia",
+                  "InflowDisease",
+                  "OutflowDisease",
+                  "RunoffDisease",
+                  "hemodynamicLaterality", #Not 100% this belongs here JS
+                  "stentBPG" # Not sure about this one either
+                  )
+
+comorbidity.var.names <- c("anyAnemia",
+                           "CEREBROVASCULAR",
+                           "CHRONIC_PULM_DISEASE",
+                           "COAGULOPATHY",
+                           "CONGESTIVE HEART FAILURE-COMPLICATED",
+                           "CHF",
+                           "DEMENTIA-NA",
+                           "DIABETES-COMPLICATED",
+                           "DIABETES",
+                           "DIABETES-UNCOMPLICATED",
+                           "anyHyperlipidemia",
+                           "HYPERTENSION-COMPLICATED",            
+                           "HYPERTENSION-UNCOMPLICATED",
+                           "MI",
+                           "OBESITY",
+                           "RENAL DISEASE-CKD",
+                           "RENAL DISEASE-COMPLICATED",
+                           "RENAL DISEASE-ESRD",
+                           "RENAL_DISEASE",
+                           "SMOKING",
+                           "VENOUS_INSUFFICIENCY",
+                           "WEIGHT_LOSS",
+                           "VTE",
+                           "CAD")
+
+intervention.var.name <- "primaryProcedure"
+
+ided.vars <- c(id.var.names, outcome.var.names, comorbidity.var.names, disease.var.names, intervention.var.name)
+unknown.vars <- names(clti)[!names(clti) %in% ided.vars]
+```
+
+# Aim 2
+
+```{r ctmle_fits}
+covar.names <- c(comorbidity.var.names, disease.var.names)
+mort.ctmle.fit <- fitCTMLE(clti, "mort2yr", covar.names)
+```
