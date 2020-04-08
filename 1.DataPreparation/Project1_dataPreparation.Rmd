@@ -39,7 +39,7 @@ grid <- grid %>% mutate(ptSide = paste0(ptNum, hemodynamicLaterality))
 
 
 # Find the primary WM and primary revasc patients
-primaryProc <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>% 
+indexProcedureDF <-  procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>% 
   filter(ptSide %in% grid$ptSide) %>%  # keep patients from grid2 
   filter(procGroup != "other") %>% # procedures labeled as "other" do not apply to us
   select(ptNum, ptSide, CLI_DX_DATE, PROCEDURE_DATE, DAYS_FROM_CLI_DX, procGroup) %>% # Select the columns that matter to us
@@ -56,7 +56,8 @@ primaryProc <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>%
          indexProcedureDatePlus30 = if_else(indexProcedureFlag == 1, indexProcedureDate + days(30), as_date(NA)),
          indexProcedureDatePlus10 = if_else(indexProcedureFlag == 1, indexProcedureDate + days(10), as_date(NA)),
          indexProcedureDatePlus90 = if_else(indexProcedureFlag == 1, indexProcedureDate + days(90), as_date(NA))) %>%
-  arrange(ptSide, DAYS_FROM_CLI_DX) %>%
+  arrange(ptSide, DAYS_FROM_CLI_DX) 
+primaryProc <- indexProcedureDF %>%
   fill(indexProcedureDate, .direction = "down") %>%
   fill(indexProcedureDatePlus30, .direction = "down") %>%
   fill(indexProcedureDatePlus10,.direction = "down") %>%
@@ -138,7 +139,61 @@ amp2yr <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>%
 
 ## Create the MACE outcomes
 ```{r}
+# Read in the diagnoses from the comorbidities file
+comorbid <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/_IRB18-1153_PROJECT_DATA/IRB18-1153_COMORBITITIES_DETAIL_WITH_DX_CODE.xlsx", skip = 3) 
+# Need to crosswalk the MRNs to the ptNums
+crosswalk <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/Analysis/Data_for_Siyeon/MRN_to_PtNum_crosswalk.xlsx")
+
+comorbid <- comorbid %>% filter(CURRENT_MRN %in% crosswalk$CURRENT_MRN) %>% # We only need comorbidities for our cohort
+  left_join(crosswalk, by = "CURRENT_MRN") %>% # add the ptNums to the file
+  select(-CURRENT_MRN) %>%
+  mutate(ptNum = as.character(ptNum))
+
+# Load the codes
+icd9MACEcodes <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/Analysis/5.Outcome_creation/MACE_creation/allMACEcodes_KM edits.xlsx", sheet = 2)
+icd10MACEcodesA <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/Analysis/5.Outcome_creation/MACE_creation/McGinigle_mapping.xlsx", sheet = 1)
+icd10MACEcodesB <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/Analysis/5.Outcome_creation/MACE_creation/McGinigle_mapping.xlsx", sheet = 2)
+icd10MACEcodesC <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/Analysis/5.Outcome_creation/MACE_creation/McGinigle_mapping.xlsx", sheet = 3)
+icd10MACEcodesD <- readxl::read_xlsx("/Volumes/McGinigle_Kate_IRB18-1153/Analysis/5.Outcome_creation/MACE_creation/McGinigle_mapping.xlsx", sheet = 4)
+maceCodes <- c(icd9MACEcodes$ICD9_decimal, icd10MACEcodesA$icd10, 
+               icd10MACEcodesB$icd10, icd10MACEcodesC$icd10, icd10MACEcodesD$icd10)
+maceCodes <- data.frame(DIAGNOSIS_CODE = maceCodes, MACE = 1)
+
+ptsAndIndexProcedures <- indexProcedureDF %>% filter(indexProcedureFlag == 1) %>%
+  ungroup() %>%
+  select(ptNum, indexProcedureDate = PROCEDURE_DATE) %>%
+  mutate(ptNum = as.character(ptNum))
+
+
+temp <- ptsAndIndexProcedures %>% left_join(comorbid, by = "ptNum") %>% # Only look at comorbidities for people in the cohort
+  mutate(indexProcedureDate = as_date(indexProcedureDate), MAX_OVERALL_DATE = as_date(MAX_OVERALL_DATE)) %>% # Make dates usable
+  mutate(Days_from_IndexProcedure = MAX_OVERALL_DATE - indexProcedureDate) %>% # negatives will be pre-index procedure diagnoses
+  filter(Days_from_IndexProcedure > 0 ) %>% # Only want events after index procedure
+  select(ptNum, indexProcedureDate, DIAGNOSIS_CODE, DIAGNOSIS_DESCRIPTION, 
+         COMORBIDITY, SECONDARY_INFO, MIN_OVERALL_DATE, MAX_OVERALL_DATE, 
+         TOTAL_OVERALL_DX, Days_from_IndexProcedure) %>%
+  mutate(DIAGNOSIS_CODE = as.character(DIAGNOSIS_CODE))
+
+
+temp2 <- left_join(temp, maceCodes, by = "DIAGNOSIS_CODE") %>%
+  filter(Days_from_IndexProcedure <= 365*2) %>%
+  group_by(ptNum) %>%
+  summarise(MACE = sum(MACE, na.rm = TRUE)) %>%
+  mutate(MACE = if_else(MACE >0, 1, 0)) %>%
+  rename(mace2yr = MACE)
+
+mace <- temp2
+
+
+# mace <- left_join(grid, temp2, by = "CURRENT_MRN") %>% 
+#   mutate(noComorbiditiesInFile = if_else(is.na(MI), 1, 0)) %>%
+#   mutate(MACE = if_else(is.na(MACE) & noComorbiditiesInFile == 0, 0, MACE)) 
+# rm(temp, temp2, maceCodes)
+# rm(icd9MACEcodes, icd10MACEcodesA, icd10MACEcodesB, icd10MACEcodesC, icd10MACEcodesD)
+# 
+# write_xlsx(mace, "mace.xlsx")
 ```
+
 
 ## Merge the outcomes, comorbidities, and procedures
 ```{r}
@@ -152,6 +207,9 @@ preAnalyticData <- left_join(primaryProc, mort2yr, by = c("ptNum", "ptSide")) %>
   mutate(RunoffDisease = if_else(RunoffDisease == -50, 0, RunoffDisease),
          InflowDisease = if_else(InflowDisease == -50, 0, InflowDisease),
          OutflowDisease = if_else(OutflowDisease == -50, 0, OutflowDisease))
+# Merge mace
+preAnalyticData <- preAnalyticData %>% left_join(mace, by = "ptNum") %>%
+  replace_na(list(mace2yr = 0))
 ```
 
 ## Reduce down to analytic dataset
@@ -166,7 +224,8 @@ preAnalyticData2 <- preAnalyticData %>% select(ptNum, ptSide, # Patient Limb ide
                            maxRutherfordClass, ischemia, # Severity
                            woundClass, infectionClass,
                            ANEMIA:CAD, # comorbidities
-                           mort2yr, majorAmp2yr)  
+                           mort2yr, majorAmp2yr,
+                           mace2yr)  
 
 # Combine the rare comorbidities (e.g anemia)
 preAnalyticData2 %>% ungroup() %>% summarise_at(vars(InflowDisease:CAD), sum)
@@ -183,7 +242,7 @@ analyticData <- preAnalyticData2 %>%
   select(-c(ANEMIA, `DEFICIENCY ANEMIA-NA`, `HYPERLIPIDEMIA-COMPLICATED`, `HYPERLIPIDEMIA-NA`,
             infectionClass, `CEREBROVASCULAR DISEASE-COMPLICATED`,
             `WOUND-COMPLICATED`, `WOUND-EXTREMITY`, `WOUND`)) %>%
-  select(ptNum:CAD, anyAnemia, anyHyperlipidemia, mort2yr, majorAmp2yr) %>%
+  select(ptNum:CAD, anyAnemia, anyHyperlipidemia, mort2yr, majorAmp2yr, mace2yr) %>%
   mutate(ampFreeSurv2yr = if_else(mort2yr == 0 & majorAmp2yr == 0 , 1, 0))
 
 
