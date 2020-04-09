@@ -17,6 +17,7 @@ grid <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/grid2NoM
 mort <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/mortNoMRN.xlsx")
 proc <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/procGroupedNoMRN.xlsx")
 procLat <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/procLatNoMRN.xlsx")
+ptFile <- readxl::read_xlsx("/Users/Nikki/Dropbox/Consulting project/Data/masterPtFileNoMRN.xlsx")
 ```
 
 
@@ -194,8 +195,21 @@ mace <- temp2
 # write_xlsx(mace, "mace.xlsx")
 ```
 
+## Demographics
+```{r}
+# Merge demographics
+ptFile$ptNum <- as.character(ptFile$ptNum)
+demog <- ptFile %>% left_join(ptsAndIndexProcedures, by = "ptNum") %>%
+  mutate(BIRTH_DATE = as_date(BIRTH_DATE),
+         ageAtIndexProcedure0 = as.period(interval(BIRTH_DATE, indexProcedureDate), units = "years"),
+         ageAtIndexProcedure = year(ageAtIndexProcedure0)) %>%
+  filter(!is.na(indexProcedureDate)) %>%
+  select(ptNum, GENDER, ETHNICITY, PATIENT_RACE_1, ageAtIndexProcedure) %>%
+  distinct()
 
-## Merge the outcomes, comorbidities, and procedures
+```
+
+## Merge the outcomes, comorbidities, procedures, and demographics
 ```{r}
 preAnalyticData <- left_join(primaryProc, mort2yr, by = c("ptNum", "ptSide")) %>%
   left_join(amp2yr, by = c("ptNum", "ptSide")) %>%
@@ -207,15 +221,20 @@ preAnalyticData <- left_join(primaryProc, mort2yr, by = c("ptNum", "ptSide")) %>
   mutate(RunoffDisease = if_else(RunoffDisease == -50, 0, RunoffDisease),
          InflowDisease = if_else(InflowDisease == -50, 0, InflowDisease),
          OutflowDisease = if_else(OutflowDisease == -50, 0, OutflowDisease))
+
 # Merge mace
 preAnalyticData <- preAnalyticData %>% left_join(mace, by = "ptNum") %>%
   replace_na(list(mace2yr = 0))
+
+
+preAnalyticData <- preAnalyticData %>% inner_join(demog, by = 'ptNum')
 ```
 
 ## Reduce down to analytic dataset
 ```{r}
 # Select only the vars we need, replace NAs as needed
 preAnalyticData2 <- preAnalyticData %>% select(ptNum, ptSide, # Patient Limb identifiers
+                                              GENDER, PATIENT_RACE_1, ETHNICITY, ageAtIndexProcedure, # Demographics
                            primaryProcedure, # primary treatment
                            CLI_DX_DATE = STUDY_DATE...3, # CLTI diagnosis date
                            hemodynamicLaterality, InflowDisease,  # Anatomy
@@ -243,7 +262,8 @@ analyticData <- preAnalyticData2 %>%
             infectionClass, `CEREBROVASCULAR DISEASE-COMPLICATED`,
             `WOUND-COMPLICATED`, `WOUND-EXTREMITY`, `WOUND`)) %>%
   select(ptNum:CAD, anyAnemia, anyHyperlipidemia, mort2yr, majorAmp2yr, mace2yr) %>%
-  mutate(ampFreeSurv2yr = if_else(mort2yr == 0 & majorAmp2yr == 0 , 1, 0))
+  mutate(ampFreeSurv2yr = if_else(mort2yr == 0 & majorAmp2yr == 0 , 1, 0)) %>%
+  filter(!is.na(CAD)) 
 
 
 
