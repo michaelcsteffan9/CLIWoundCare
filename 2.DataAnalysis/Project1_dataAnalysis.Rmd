@@ -14,11 +14,13 @@ source("aim2.R")
 #########################################################
 library(ctmle)
 library(DynTxRegime)
+library(glmnet)
 library(tidyverse)
 library(magrittr)
 library(readxl)
 library(lubridate)
 library(here)
+library(table1)
 here <- here::here
 
 #########################################################
@@ -42,10 +44,115 @@ if(str_detect(string = cur.directory, pattern = "michael")){
 }
 if(exists("data.dir.path") == FALSE | str_detect(data.dir.path, "Fix me") == TRUE) stop("Fix data directory specification")
 
-clti <- read_csv(file = paste0(data.dir.path, "analyticData.csv"))
-clti %<>%  mutate_at(.vars = "hemodynamicLaterality", ~if_else(. == "Left", 1, 0)) %>% 
-  mutate(primaryTreatmentInt = if_else(primaryProcedure == "WM", 1, 0) )
+clti <- read_csv(file = paste0(data.dir.path, "analyticData.csv"),
+                 col_types = cols(
+                   ptNum = col_character(), 
+                   ptSide = col_character(), 
+                   GENDER = col_factor(), 
+                   PATIENT_RACE_1 = col_factor(), 
+                   ETHNICITY = col_factor(), 
+                   ageAtIndexProcedure = col_integer(), 
+                   primaryProcedure = col_factor(), 
+                   CLI_DX_DATE = col_datetime(), 
+                   hemodynamicLaterality = col_factor(), 
+                   InflowDisease = col_integer(), 
+                   OutflowDisease = col_integer(), 
+                   RunoffDisease = col_integer(), 
+                   stentBPG = col_integer(), 
+                   maxRutherfordClass = col_factor(ordered = TRUE), 
+                   ischemia = col_factor(ordered = TRUE), 
+                   woundClass = col_factor(ordered=TRUE), 
+                   CHRONIC_PULM_DISEASE = col_integer(), 
+                   COAGULOPATHY = col_integer(), 
+                   `CONGESTIVE HEART FAILURE-COMPLICATED` = col_integer(), 
+                   CHF = col_integer(), 
+                   `DEMENTIA-NA` = col_integer(), 
+                   `DIABETES-COMPLICATED` = col_integer(), 
+                   DIABETES = col_integer(), 
+                   `DIABETES-UNCOMPLICATED` = col_integer(), 
+                   `HYPERTENSION-COMPLICATED` = col_integer(), 
+                   `HYPERTENSION-UNCOMPLICATED` = col_integer(), 
+                   MI = col_integer(), 
+                   OBESITY = col_integer(), 
+                   `RENAL DISEASE-CKD` = col_integer(), 
+                   `RENAL DISEASE-COMPLICATED` = col_integer(), 
+                   `RENAL DISEASE-ESRD` = col_integer(), 
+                   RENAL_DISEASE = col_integer(), 
+                   SMOKING = col_integer(), 
+                   VENOUS_INSUFFICIENCY = col_integer(), 
+                   WEIGHT_LOSS = col_integer(), 
+                   CEREBROVASCULAR = col_integer(), 
+                   VTE = col_integer(), 
+                   CAD = col_integer(), 
+                   anyAnemia = col_integer(), 
+                   anyHyperlipidemia = col_integer(), 
+                   mort2yr = col_integer(), 
+                   majorAmp2yr = col_integer(), 
+                   mace2yr = col_integer(), 
+                   ampFreeSurv2yr = col_integer() 
+                 ))
 
+# This is for an easier to read table1
+# temporary, can remove later
+clti.binary.as.logical <- read_csv(file = paste0(data.dir.path, "analyticData.csv"),
+                 col_types = cols(
+                   ptNum = col_character(), 
+                   ptSide = col_character(), 
+                   GENDER = col_factor(), 
+                   PATIENT_RACE_1 = col_factor(), 
+                   ETHNICITY = col_factor(), 
+                   ageAtIndexProcedure = col_integer(), 
+                   primaryProcedure = col_factor(), 
+                   CLI_DX_DATE = col_datetime(), 
+                   hemodynamicLaterality = col_factor(), 
+                   InflowDisease = col_logical(), 
+                   OutflowDisease = col_logical(), 
+                   RunoffDisease = col_logical(), 
+                   stentBPG = col_logical(), 
+                   maxRutherfordClass = col_factor(ordered = TRUE), 
+                   ischemia = col_factor(ordered = TRUE), 
+                   woundClass = col_factor(ordered=TRUE), 
+                   CHRONIC_PULM_DISEASE = col_logical(), 
+                   COAGULOPATHY = col_logical(), 
+                   `CONGESTIVE HEART FAILURE-COMPLICATED` = col_logical(), 
+                   CHF = col_logical(), 
+                   `DEMENTIA-NA` = col_logical(), 
+                   `DIABETES-COMPLICATED` = col_logical(), 
+                   DIABETES = col_logical(), 
+                   `DIABETES-UNCOMPLICATED` = col_logical(), 
+                   `HYPERTENSION-COMPLICATED` = col_logical(), 
+                   `HYPERTENSION-UNCOMPLICATED` = col_logical(), 
+                   MI = col_logical(), 
+                   OBESITY = col_logical(), 
+                   `RENAL DISEASE-CKD` = col_logical(), 
+                   `RENAL DISEASE-COMPLICATED` = col_logical(), 
+                   `RENAL DISEASE-ESRD` = col_logical(), 
+                   RENAL_DISEASE = col_logical(), 
+                   SMOKING = col_logical(), 
+                   VENOUS_INSUFFICIENCY = col_logical(), 
+                   WEIGHT_LOSS = col_logical(), 
+                   CEREBROVASCULAR = col_logical(), 
+                   VTE = col_logical(), 
+                   CAD = col_logical(), 
+                   anyAnemia = col_logical(), 
+                   anyHyperlipidemia = col_logical(), 
+                   mort2yr = col_logical(), 
+                   majorAmp2yr = col_logical(), 
+                   mace2yr = col_logical(), 
+                   ampFreeSurv2yr = col_logical() 
+                 ))
+
+
+clti.base <- read.csv(file = paste0(data.dir.path, "analyticData.csv"))
+# Use base R naming scheme for column names. Saves some headaches later with DynTxRegime
+names(clti) <- names(clti.base)
+#clti <- fastDummies::dummy_cols(clti %>% select(-all_of(id.var.names)))
+
+rm(clti.base)
+```
+
+```{r prevalence_summary}
+clti.binary.as.logical %>% select(-all_of(c("ptNum", "ptSide", "CLI_DX_DATE"))) %>% table1(x = ~. | primaryProcedure, data = .)
 ```
 
 ```{r vars}
@@ -53,7 +160,8 @@ id.var.names <- c("ptNum", "ptSide", "CLI_DX_DATE")
 
 outcome.var.names <- c("ampFreeSurv2yr",
                        "majorAmp2yr",
-                       "mort2yr")
+                       "mort2yr",
+                       "mace2yr")
 
 disease.var.names <- c("maxRutherfordClass",
                   "woundClass",
@@ -88,17 +196,87 @@ comorbidity.var.names <- c("anyAnemia",
                            "VENOUS_INSUFFICIENCY",
                            "WEIGHT_LOSS",
                            "VTE",
-                           "CAD")
+                           "CAD") %>% 
+  str_replace_all(., pattern = "[:space:]|-", replacement= ".")
+
+demo.var.names <- c("GENDER",
+                    "PATIENT_RACE_1",
+                    "ETHNICITY",
+                    "ageAtIndexProcedure")
+
 
 intervention.var.name <- "primaryProcedure"
 
-ided.vars <- c(id.var.names, outcome.var.names, comorbidity.var.names, disease.var.names, intervention.var.name)
-unknown.vars <- names(clti)[!names(clti) %in% ided.vars]
+# This stuff was just for trying to make sure I had the variable names right 
+#ided.vars <- c(id.var.names, outcome.var.names, comorbidity.var.names, disease.var.names, 
+#               demo.var.names, intervention.var.name)
+#unknown.vars <- names(clti)[!names(clti) %in% ided.vars]
+```
+
+```{r preprocessing}
+#########################################################
+## Preprocessing
+#########################################################
+# Create a nonwhite indicate
+# recode a few factors as 0-1 integers
+# create a ampFree where 1 is bad and 0 is good to be in line with the other outcome vars
+clti %<>%  mutate(primaryTreatmentInt = if_else(primaryProcedure == "WM", 1, 0),
+                  nonWhite = if_else(PATIENT_RACE_1 == "WHITE OR CAUCASIAN", 1, 0),
+                  ampMort2yr = abs(ampFreeSurv2yr-1)) %>% 
+          mutate_at(.vars = "hemodynamicLaterality", ~if_else(. == "Right" | . == 1, 1, 0)) %>% 
+  mutate_at(.vars = "GENDER", ~if_else(. == "FEMALE"| . == 1, 1, 0))
+
+prevalence.prop.tables <- clti %>% select(-any_of(c("ptNum", "ptSide", "CLI_DX_DATE", "ageAtIndexProcedure", outcome.var.names, "ampMort2yr"))) %>% 
+  apply(., 2, function(x){
+    temp.data <- data.frame(clti$primaryProcedure, x)
+    round(prop.table(table(temp.data), 1),2)
+  })
+#TODO: 
+# This is really checking whether the prevalence is between .2-.8
+prev.abv.20 <- map_lgl(prevalence.prop.tables, ~all(. >= .2))
+nonnum.covars.to.include <- names(prev.abv.20)[prev.abv.20]
+
+```
+
+The non-numeric variables to be considered based on having prevalence greater than 20% in both intervention groups are
+
+```{r prev_vars}
+print(nonnum.covars.to.include)
+
 ```
 
 # Aim 2
 
-```{r ctmle_fits}
-covar.names <- c(comorbidity.var.names, disease.var.names)
+```{r aim2_model_fitting, cache=TRUE}
+covar.names <- c("ageAtIndexProcedure", nonnum.covars.to.include)
+
+#mod.formula <- str_c("mort2yr ~ ", paste(covar.names, collapse = " + ")) %>% as.formula(.)
+#clti.mod.mat <- model.frame(formula = mod.formula, data = clti)
+#clti.mod.mat$primaryTreatmentInt <- clti$primaryTreatmentInt
+set.seed(808)
+ampsurv.ctmle.fit <- fitCTMLE(clti, "ampMort2yr", covar.names)
 mort.ctmle.fit <- fitCTMLE(clti, "mort2yr", covar.names)
+amp.ctmle.fit <- fitCTMLE(clti, "majorAmp2yr", covar.names)
+mace.ctmle.fit <- fitCTMLE(clti, "mace2yr", covar.names)
+
+ampsurv.aipw.fit <- fitAIPWE(clti, "ampMort2yr", covar.names)
+mort.aipw.fit <- fitAIPWE(clti, "mort2yr", covar.names)
+amp.aipw.fit <- fitAIPWE(clti, "majorAmp2yr", covar.names)
+mace.aipw.fit <- fitAIPWE(clti, "mace2yr", covar.names)
+```
+
+Notice: Amputation-free survival has been recoded so 1 is bad and 0 is good for the moment so that it is in line with the other outcome variables where 1 is bad and 0 is good. Easier to keep track of for the moment while trying to diagnose what's happening. 
+
+```{r aim2_summaries}
+aim2.mods <- list("Amp_mort_2yr-CTMLE" = ampsurv.ctmle.fit, 
+                  "Mort_2yr-CTMLE" = mort.ctmle.fit, 
+                  "Amp_2yr-CTMLE" = amp.ctmle.fit, 
+                  "MACE_2yr-CTMLE" = mace.ctmle.fit,
+                  "Amp_mort_2yr-AIPW" = ampsurv.aipw.fit, 
+                  "Mort_2yr-AIPW" = mort.aipw.fit, 
+                  "Amp_2yr-AIPW" = amp.aipw.fit, 
+                  "MACE_2yr-AIPW" = mace.aipw.fit)
+
+map(aim2.mods, ~summary(.))
+
 ```
