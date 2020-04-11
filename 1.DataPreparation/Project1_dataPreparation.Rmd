@@ -49,7 +49,7 @@ indexProcedureDF <-  procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>%
          CLI_DX_DATE = ymd(CLI_DX_DATE),
          PROCEDURE_DATE = ymd(PROCEDURE_DATE),
          DAYS_FROM_CLI_DX = as.numeric(DAYS_FROM_CLI_DX),
-         procGroup = as.character(procGroup)) %>%
+         procGroup = as.character(procGroup)) %>% 
   filter(DAYS_FROM_CLI_DX >= 0) %>% # Remove procedures from before the CLI_DX_DATE
   group_by(ptSide) %>% 
   mutate(indexProcedureFlag = if_else(DAYS_FROM_CLI_DX == min(DAYS_FROM_CLI_DX), 1, 0), # Flag the index procedures
@@ -268,7 +268,56 @@ analyticData <- preAnalyticData2 %>%
 
 
   
-readr::write_csv(x = analyticData, path = "analyticData.csv")
+# readr::write_csv(x = analyticData, path = "analyticData.csv")
   
   
+```
+      
+```{r, eval = FALSE, include = FALSE}
+# Curiosity killed the cat
+analyticData <- read_csv("/Users/Nikki/Dropbox/Consulting Project/Data/analyticData.csv") %>%
+  mutate(ptNum = as.character(ptNum),
+         CLI_DX_DATE = ymd(CLI_DX_DATE))
+
+procs <- procLat %>% mutate(ptSide = paste0(ptNum, laterality)) %>% 
+  filter(ptSide %in% grid$ptSide) %>%  # keep patients from grid2 
+  filter(procGroup != "other") %>% # procedures labeled as "other" do not apply to us
+  select(ptNum, ptSide, CLI_DX_DATE, PROCEDURE_DATE, DAYS_FROM_CLI_DX, procGroup) %>% # Select the columns that matter to us
+  mutate(ptNum = as.character(ptNum), # Fix the variable types (yay defense!)
+         ptSide = as.character(ptSide), 
+         CLI_DX_DATE = ymd(CLI_DX_DATE),
+         PROCEDURE_DATE = ymd(PROCEDURE_DATE),
+         DAYS_FROM_CLI_DX = as.numeric(DAYS_FROM_CLI_DX),
+         procGroup = as.character(procGroup)) %>% arrange(ptSide, DAYS_FROM_CLI_DX)
+
+analyticData %>% left_join(procs, by = c('ptNum', "ptSide", "CLI_DX_DATE")) %>%
+  filter(DAYS_FROM_CLI_DX >= 0) %>% # Remove procedures from before the CLI_DX_DATE
+  group_by(ptSide) %>% 
+  mutate(indexProcedureFlag = if_else(DAYS_FROM_CLI_DX == min(DAYS_FROM_CLI_DX), 1, 0))  %>%# Flag the index procedures 
+  filter(indexProcedureFlag == 1) %>%
+  select(ptSide, DAYS_FROM_CLI_DX, primaryProcedure) %>%
+  ungroup() %>%
+  distinct() %>%
+  filter(DAYS_FROM_CLI_DX < 365/2) %>%
+  ggplot(aes(x = DAYS_FROM_CLI_DX)) +
+  geom_histogram(bins = 10) +
+  facet_wrap(~primaryProcedure)
+
+analyticData %>% left_join(procs, by = c('ptNum', "ptSide", "CLI_DX_DATE"))  %>%
+  filter(primaryProcedure == "WM") %>%
+  group_by(ptNum, ampFreeSurv2yr) %>%
+  count(procGroup) %>%
+  pivot_wider(id_cols = c(ptNum, ampFreeSurv2yr),
+              names_from = procGroup,
+              values_from = n) 
+
+analyticData %>% left_join(procs, by = c('ptNum', "ptSide", "CLI_DX_DATE"))  %>%
+  filter(primaryProcedure == "WM") %>%
+  filter(DAYS_FROM_CLI_DX >=0) %>%
+  mutate(eventualRevasc = if_else(procGroup == 'Endovascular' | procGroup == 'Open', 1, 0)) %>%
+  select(ptNum, mort2yr, eventualRevasc) %>%
+  distinct() %>%
+  group_by(mort2yr, eventualRevasc) %>%
+  count()
+
 ```

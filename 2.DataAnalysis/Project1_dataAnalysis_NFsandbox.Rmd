@@ -22,7 +22,7 @@ library(lubridate)
 library(here)
 library(table1)
 library(sandwich)
-library(metaviz)
+# library(metaviz)
 library(randomForest)
 library(earth)
 here <- here::here
@@ -230,16 +230,52 @@ clti %<>%  mutate(primaryTreatmentInt = if_else(primaryProcedure == "WM", 1, 0),
           mutate_at(.vars = "hemodynamicLaterality", ~if_else(. == "Right" | . == 1, 1, 0)) %>% 
   mutate_at(.vars = "GENDER", ~if_else(. == "FEMALE"| . == 1, 1, 0))
 
-prevalence.prop.tables <- clti %>% select(-any_of(c("ptNum", "ptSide", "CLI_DX_DATE", "ageAtIndexProcedure", outcome.var.names, "ampMort2yr"))) %>% 
-  apply(., 2, function(x){
-    temp.data <- data.frame(clti$primaryProcedure, x)
-    round(prop.table(table(temp.data), 1),2)
-  })
-#TODO: 
-# This is really checking whether the prevalence is between .18-.82
-prev.abv.cutoff <- map_lgl(prevalence.prop.tables, ~all(. >= .18))
-nonnum.covars.to.include <- names(prev.abv.cutoff)[prev.abv.cutoff]
+# prevalence.prop.tables <- clti %>% select(-any_of(c("ptNum", "ptSide", "CLI_DX_DATE", "ageAtIndexProcedure", outcome.var.names, "ampMort2yr"))) %>% 
+#   apply(., 2, function(x){
+#     temp.data <- data.frame(clti$primaryProcedure, x)
+#     round(prop.table(table(temp.data), 1),2)
+#   })
+# #TODO: 
+# # This is really checking whether the prevalence is between .18-.82
+# prev.abv.cutoff <- map_lgl(prevalence.prop.tables, ~all(. >= .18))
+# nonnum.covars.to.include <- names(prev.abv.cutoff)[prev.abv.cutoff]
 
+# # One attempt
+# nonnum.covars.to.include <- clti %>% group_by(primaryProcedure) %>% 
+#   select(all_of(comorbidity.var.names), primaryProcedure) %>%
+#   summarise_at(comorbidity.var.names, sum) %>%
+#   mutate_at(comorbidity.var.names, 
+#             function(col){col * (1/349)}) %>%
+#   pivot_longer(cols = anyAnemia:CAD, 
+#                names_to = "comorbidity", 
+#                values_to = "proportion") %>%
+#   pivot_wider(id_cols = comorbidity, 
+#               names_from = primaryProcedure, 
+#               values_from = proportion) %>%
+#   filter(Revasc >= 0.05 & WM >= 0.05) %>%
+#   select(comorbidity)
+# 
+# nonnum.covars.to.include <- nonnum.covars.to.include$comorbidity
+
+# Attempt 2
+clti <- clti %>% mutate(ischemia3 = if_else(ischemia == 3, 1, 0),
+                anyCHF = if_else(CONGESTIVE.HEART.FAILURE.COMPLICATED == 1 | CHF == 1, 1, 0),
+                anyDiabetes = if_else(DIABETES.COMPLICATED == 1 |
+                                        DIABETES == 1 |
+                                        DIABETES.UNCOMPLICATED == 1, 1, 0),
+                anyHtn = if_else(HYPERTENSION.COMPLICATED == 1 | 
+                                   HYPERTENSION.UNCOMPLICATED == 1, 1, 0),
+                anyRenalDisease = if_else(RENAL.DISEASE.CKD == 1 |
+                                            RENAL.DISEASE.COMPLICATED == 1 |
+                                            RENAL.DISEASE.ESRD == 1|
+                                            RENAL_DISEASE == 1, 1, 0),
+                wound0 = if_else(woundClass == 0, 1, 0),
+                wound1 = if_else(woundClass == 1, 1, 0),
+                wound2 = if_else(woundClass == 2, 1, 0),
+                wound3 = if_else(woundClass == 3, 1, 0),
+                maxRutherford4 = if_else(maxRutherfordClass == 4, 1, 0),
+                maxRutherford5or6 = if_else(maxRutherford4 == 0, 1, 0))
+  
 ```
 
 The non-numeric variables to be considered based on having prevalence greater than 20% in both intervention groups are
@@ -252,31 +288,47 @@ print(nonnum.covars.to.include)
 # Aim 2
 
 ```{r aim2_model_fitting, cache=TRUE, warning=FALSE, message=FALSE}
-covar.names <- c("ageAtIndexProcedure", nonnum.covars.to.include)
+# covar.names <- c("ageAtIndexProcedure", nonnum.covars.to.include,
+                 # disease.var.names, "GENDER", "nonWhite", "ETHNICITY")
+covar.names <- c("GENDER", "InflowDisease", "OutflowDisease", "RunoffDisease",
+                 "stentBPG", "CHRONIC_PULM_DISEASE", "CEREBROVASCULAR",
+                 "anyCHF", "anyDiabetes", "anyHyperlipidemia", "anyHtn", "MI", "OBESITY",
+                 "anyRenalDisease", 
+                 # "maxRutherford4", 
+                 "maxRutherford5or6",
+                 # "wound0", 
+                 "wound1", "wound2", 
+                 "wound3", 
+                 "COAGULOPATHY", 
+                 "SMOKING", "VENOUS_INSUFFICIENCY", "VTE", "CAD", "ischemia3")
 
-set.seed(8675309)
+# set.seed(8675309)
+set.seed(1209032)
+# set.seed(98845)
+# set.seed(808324)
+# set.seed(13579)
 # Tried 10-fold and got a funky error
 ampsurv.ctmle.fit <- fitCTMLE(clti, "ampMort2yr", covar.names,
-                              SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
-                                            "SL.ksvm", "SL.earth"), 
+                              SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                             "SL.ksvm", "SL.earth"),
                               gbound = .05)
-mort.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "mort2yr", covar.names,
-                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
-                                          "SL.ksvm", "SL.earth"), 
-                           gbound = .05))
-amp.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "majorAmp2yr", covar.names, 
+mort.ctmle.fit <- fitCTMLE(clti, "mort2yr", covar.names,
+                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                          "SL.ksvm", "SL.earth"),
+                           gbound = .05)
+amp.ctmle.fit <- fitCTMLE(clti, "majorAmp2yr", covar.names,
                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
-                                         "SL.ksvm", "SL.earth"), 
-                          gbound = .05))
-mace.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "mace2yr", covar.names, 
-                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
-                                          "SL.ksvm", "SL.earth"), 
-                           gbound = .05))
+                                         "SL.ksvm", "SL.earth"),
+                          gbound = .05)
+mace.ctmle.fit <- fitCTMLE(clti, "mace2yr", covar.names,
+                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                          "SL.ksvm", "SL.earth"),
+                           gbound = .05)
 
-ampsurv.aipw.fit <- fitAIPWE(clti, "ampMort2yr", covar.names)
-mort.aipw.fit <- fitAIPWE(clti, "mort2yr", covar.names)
-amp.aipw.fit <- fitAIPWE(clti, "majorAmp2yr", covar.names)
-mace.aipw.fit <- fitAIPWE(clti, "mace2yr", covar.names)
+# ampsurv.aipw.fit <- fitAIPWE(clti, "ampMort2yr", covar.names)
+# mort.aipw.fit <- fitAIPWE(clti, "mort2yr", covar.names)
+# amp.aipw.fit <- fitAIPWE(clti, "majorAmp2yr", covar.names)
+# mace.aipw.fit <- fitAIPWE(clti, "mace2yr", covar.names)
 ```
 
 ```{r aim2_plot}
@@ -309,7 +361,7 @@ results.sum.df %<>% arrange(Outcome)
 results.sum.df %<>% mutate(Lower = RD.hat - 1.96*se,
                            Upper = RD.hat + 1.96*se)
 
-aim2.plot <- suppressWarnings(ggplot(data = results.sum.df, aes(x = Outcome, y = RD.hat,  ymin = Lower, ymax = Upper))+
+aim2.plot <- ggplot(data = results.sum.df, aes(x = Outcome, y = RD.hat,  ymin = Lower, ymax = Upper))+
   geom_pointrange(aes(col = Method)) +
   geom_hline(aes(fill=Group),yintercept =0, linetype=2)+
     xlab('Outcome')+ ylab("Risk Difference (95% Confidence Interval)")+
@@ -321,7 +373,7 @@ aim2.plot <- suppressWarnings(ggplot(data = results.sum.df, aes(x = Outcome, y =
         axis.text.x=element_text(face="bold"),
         axis.title=element_text(size=12,face="bold"),
         strip.text.y = element_text(hjust=0,vjust = 1,angle=180,face="bold"))+
-    coord_flip())
+    coord_flip()
 ```
 
 ```{r}

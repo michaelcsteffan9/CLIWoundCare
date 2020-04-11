@@ -19,6 +19,7 @@ extractCTMLEFinalCovar <- function(ctmle.fit){
   x <- summary(ctmle.fit)
   # This code taken from print.summary.ctmle with minor modication
   # For some reason CTMLE doesn't seem to have an easy way to let you see the covariates in the selected model
+  # NF: I believe that you can use: ctmle.fit$candidates$terms[1:ctmle.fit$best_k]
   npercovar <- table(x$covar[1:x$ncand])
   suffix <- paste(x$covar[1:x$ncand], letters[unlist(apply(npercovar, 1,function(x){1:x}))], sep="")
   suffix[cumsum(npercovar)[npercovar==1]] <- names(cumsum(npercovar)[npercovar==1])
