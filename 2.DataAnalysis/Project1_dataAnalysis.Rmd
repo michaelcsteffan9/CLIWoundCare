@@ -21,6 +21,10 @@ library(readxl)
 library(lubridate)
 library(here)
 library(table1)
+library(sandwich)
+library(metaviz)
+library(randomForest)
+library(earth)
 here <- here::here
 
 #########################################################
@@ -232,9 +236,9 @@ prevalence.prop.tables <- clti %>% select(-any_of(c("ptNum", "ptSide", "CLI_DX_D
     round(prop.table(table(temp.data), 1),2)
   })
 #TODO: 
-# This is really checking whether the prevalence is between .2-.8
-prev.abv.20 <- map_lgl(prevalence.prop.tables, ~all(. >= .2))
-nonnum.covars.to.include <- names(prev.abv.20)[prev.abv.20]
+# This is really checking whether the prevalence is between .18-.82
+prev.abv.cutoff <- map_lgl(prevalence.prop.tables, ~all(. >= .18))
+nonnum.covars.to.include <- names(prev.abv.cutoff)[prev.abv.cutoff]
 
 ```
 
@@ -247,23 +251,112 @@ print(nonnum.covars.to.include)
 
 # Aim 2
 
-```{r aim2_model_fitting, cache=TRUE}
+```{r aim2_model_fitting, cache=TRUE, warning=FALSE, message=FALSE}
 covar.names <- c("ageAtIndexProcedure", nonnum.covars.to.include)
 
-#mod.formula <- str_c("mort2yr ~ ", paste(covar.names, collapse = " + ")) %>% as.formula(.)
-#clti.mod.mat <- model.frame(formula = mod.formula, data = clti)
-#clti.mod.mat$primaryTreatmentInt <- clti$primaryTreatmentInt
-set.seed(808)
-ampsurv.ctmle.fit <- fitCTMLE(clti, "ampMort2yr", covar.names)
-mort.ctmle.fit <- fitCTMLE(clti, "mort2yr", covar.names)
-amp.ctmle.fit <- fitCTMLE(clti, "majorAmp2yr", covar.names)
-mace.ctmle.fit <- fitCTMLE(clti, "mace2yr", covar.names)
+set.seed(8675309)
+# Tried 10-fold and got a funky error
+ampsurv.ctmle.fit <- fitCTMLE(clti, "ampMort2yr", covar.names,
+                              SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
+                                            "SL.ksvm", "SL.earth"), 
+                              gbound = .05)
+mort.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "mort2yr", covar.names,
+                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
+                                          "SL.ksvm", "SL.earth"), 
+                           gbound = .05))
+amp.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "majorAmp2yr", covar.names, 
+                          SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                         "SL.ksvm", "SL.earth"), 
+                          gbound = .05))
+mace.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "mace2yr", covar.names, 
+                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
+                                          "SL.ksvm", "SL.earth"), 
+                           gbound = .05))
 
 ampsurv.aipw.fit <- fitAIPWE(clti, "ampMort2yr", covar.names)
 mort.aipw.fit <- fitAIPWE(clti, "mort2yr", covar.names)
 amp.aipw.fit <- fitAIPWE(clti, "majorAmp2yr", covar.names)
 mace.aipw.fit <- fitAIPWE(clti, "mace2yr", covar.names)
 ```
+
+```{r aim2_plot}
+ctmle.fits <- list("Amp_mort_2yr-CTMLE" = ampsurv.ctmle.fit, 
+                  "Mort_2yr-CTMLE" = mort.ctmle.fit, 
+                  "Amp_2yr-CTMLE" = amp.ctmle.fit, 
+                  "MACE_2yr-CTMLE" = mace.ctmle.fit)
+ctmle.ests <- map_dfr(ctmle.fits, ~summary(.)[c("est", "var")] %>% unlist()) %>% t()
+ctmle.ests[,2] <- sqrt(ctmle.ests[,2])
+# Use a linear model and sandich estimator to estimate the risk difference
+ampsurv.unadj <- lm(ampMort2yr ~ 1 + primaryTreatmentInt, data = clti)
+ampsurv.sandwich.se <- diag(sandwich(ampsurv.unadj))^.5
+mort.unadj <- lm(mort2yr ~ 1 + primaryTreatmentInt, data = clti)
+mort.sandwich.se <- diag(sandwich(mort.unadj))^.5
+amp.unadj <- lm(majorAmp2yr ~ 1 + primaryTreatmentInt, data = clti)
+amp.sandwich.se <- diag(sandwich(amp.unadj))^.5
+mace.unadj <- lm(mace2yr ~ 1 + primaryTreatmentInt, data = clti)
+mace.sandwich.se <- diag(sandwich(mace.unadj))^.5
+
+unadj.results <- rbind(c(coef(ampsurv.unadj)[2], ampsurv.sandwich.se[2]),
+                       c(coef(mort.unadj)[2], mort.sandwich.se[2]),
+                       c(coef(amp.unadj)[2], amp.sandwich.se[2]),
+                       c(coef(mace.unadj)[2], mace.sandwich.se[2]))
+
+results.sum.df <- as.data.frame(rbind(unadj.results, ctmle.ests))
+names(results.sum.df) <- c("RD.hat", "se")
+results.sum.df$Outcome <- c("Amp or Death", "Death", "Amputation", "MACE", "Ampu or Death", "Death", "Amputation", "MACE")
+results.sum.df$Method <- c(rep("Unadjusted", 4), rep("CTMLE", 4))
+results.sum.df %<>% arrange(Outcome)
+results.sum.df %<>% mutate(Lower = RD.hat - 1.96*se,
+                           Upper = RD.hat + 1.96*se)
+
+aim2.plot <- suppressWarnings(ggplot(data = results.sum.df, aes(x = Outcome, y = RD.hat,  ymin = Lower, ymax = Upper))+
+  geom_pointrange(aes(col = Method)) +
+  geom_hline(aes(fill=Group),yintercept =0, linetype=2)+
+    xlab('Outcome')+ ylab("Risk Difference (95% Confidence Interval)")+
+    geom_errorbar(aes(ymin=Lower, ymax=Upper,col=Method),width=0.5,cex=1)+ 
+    facet_wrap(~Outcome,strip.position="left",nrow=9,scales = "free_y") +
+    theme(plot.title=element_text(size=16,face="bold"),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.x=element_text(face="bold"),
+        axis.title=element_text(size=12,face="bold"),
+        strip.text.y = element_text(hjust=0,vjust = 1,angle=180,face="bold"))+
+    coord_flip())
+```
+
+```{r}
+aim2.plot
+```
+
+#### CTMLE Covariates
+
+```{r}
+cat("Amputation-free survival Covariates: ", extractCTMLEFinalCovar(ampsurv.ctmle.fit))
+
+cat("Amputation Covariates: ", extractCTMLEFinalCovar(amp.ctmle.fit))
+
+cat("Mortality Covariates: ", extractCTMLEFinalCovar(mort.ctmle.fit))
+
+cat("MACE Covariates: ", extractCTMLEFinalCovar(mace.ctmle.fit))
+```
+#### CTMLE Estimates
+
+```{r}
+print("Amputation or mortality")
+ampsurv.ctmle.fit
+
+print("Amputation")
+amp.ctmle.fit
+
+print("Mortality")
+mort.ctmle.fit
+
+print("Mace")
+
+mace.ctmle.fit
+```
+
+## Aim 2 Model Dump
 
 Notice: Amputation-free survival has been recoded so 1 is bad and 0 is good for the moment so that it is in line with the other outcome variables where 1 is bad and 0 is good. Easier to keep track of for the moment while trying to diagnose what's happening. 
 
@@ -278,5 +371,4 @@ aim2.mods <- list("Amp_mort_2yr-CTMLE" = ampsurv.ctmle.fit,
                   "MACE_2yr-AIPW" = mace.aipw.fit)
 
 map(aim2.mods, ~summary(.))
-
 ```
