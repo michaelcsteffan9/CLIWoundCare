@@ -22,9 +22,9 @@ library(lubridate)
 library(here)
 library(table1)
 library(sandwich)
-library(metaviz)
 library(randomForest)
 library(earth)
+library(boot)
 here <- here::here
 
 #########################################################
@@ -240,6 +240,31 @@ prevalence.prop.tables <- clti %>% select(-any_of(c("ptNum", "ptSide", "CLI_DX_D
 prev.abv.cutoff <- map_lgl(prevalence.prop.tables, ~all(. >= .18))
 nonnum.covars.to.include <- names(prev.abv.cutoff)[prev.abv.cutoff]
 
+
+clti <- clti %>% mutate(ischemia3 = if_else(ischemia == 3, 1, 0),
+                anyCHF = if_else(CONGESTIVE.HEART.FAILURE.COMPLICATED == 1 | CHF == 1, 1, 0),
+                anyDiabetes = if_else(DIABETES.COMPLICATED == 1 |
+                                        DIABETES == 1 |
+                                        DIABETES.UNCOMPLICATED == 1, 1, 0),
+                anyHtn = if_else(HYPERTENSION.COMPLICATED == 1 | 
+                                   HYPERTENSION.UNCOMPLICATED == 1, 1, 0),
+                anyRenalDisease = if_else(RENAL.DISEASE.CKD == 1 |
+                                            RENAL.DISEASE.COMPLICATED == 1 |
+                                            RENAL.DISEASE.ESRD == 1|
+                                            RENAL_DISEASE == 1, 1, 0),
+                wound0 = if_else(woundClass == 0, 1, 0),
+                wound1 = if_else(woundClass == 1, 1, 0),
+                wound2 = if_else(woundClass == 2, 1, 0),
+                wound3 = if_else(woundClass == 3, 1, 0),
+                woundAsInt = as.integer(woundClass),
+                maxRutherford4 = if_else(maxRutherfordClass == 4, 1, 0),
+                maxRutherford5or6 = if_else(maxRutherford4 == 0, 1, 0),
+                maxRutherfordAsInt = as.integer(maxRutherfordClass))
+```
+
+
+```{r prevalence_summary}
+clti %>% select(-all_of(names(clti.binary.as.logical))) %>% table1(x = ~. | primaryProcedure, data = .)
 ```
 
 The non-numeric variables to be considered based on having prevalence greater than 20% in both intervention groups are
@@ -252,31 +277,70 @@ print(nonnum.covars.to.include)
 # Aim 2
 
 ```{r aim2_model_fitting, cache=TRUE, warning=FALSE, message=FALSE}
-covar.names <- c("ageAtIndexProcedure", nonnum.covars.to.include)
-
-set.seed(8675309)
+#covar.names <- c("ageAtIndexProcedure", nonnum.covars.to.include)
+covar.names <- c("ageAtIndexProcedure","GENDER", "InflowDisease", "OutflowDisease", "RunoffDisease",
+                 "stentBPG", "CHRONIC_PULM_DISEASE", "CEREBROVASCULAR",
+                 "anyCHF", "anyDiabetes", "anyHyperlipidemia", "anyHtn", "MI", "OBESITY",
+                 "anyRenalDisease", 
+                 # "maxRutherford4", 
+                 "maxRutherford5or6",
+                 #"wound0", 
+                 "woundAsInt",
+                 "maxRutherfordAsInt",
+                 "wound1", #"wound2", 
+                 #"wound3", 
+                 "COAGULOPATHY", 
+                 "SMOKING", "VENOUS_INSUFFICIENCY", "VTE", "CAD", "ischemia3")
+set.seed(1209032)
 # Tried 10-fold and got a funky error
 ampsurv.ctmle.fit <- fitCTMLE(clti, "ampMort2yr", covar.names,
-                              SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
-                                            "SL.ksvm", "SL.earth"), 
+                              SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                             "SL.ksvm", "SL.earth"),
                               gbound = .05)
-mort.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "mort2yr", covar.names,
-                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
-                                          "SL.ksvm", "SL.earth"), 
-                           gbound = .05))
-amp.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "majorAmp2yr", covar.names, 
+mort.ctmle.fit <- fitCTMLE(clti, "mort2yr", covar.names,
+                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                          "SL.ksvm", "SL.earth"),
+                           gbound = .05)
+amp.ctmle.fit <- fitCTMLE(clti, "majorAmp2yr", covar.names,
                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
-                                         "SL.ksvm", "SL.earth"), 
-                          gbound = .05))
-mace.ctmle.fit <- suppressWarnings(fitCTMLE(clti, "mace2yr", covar.names, 
-                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest", 
-                                          "SL.ksvm", "SL.earth"), 
-                           gbound = .05))
+                                         "SL.ksvm", "SL.earth"),
+                          gbound = .05)
+mace.ctmle.fit <- fitCTMLE(clti, "mace2yr", covar.names,
+                           SL.library = c("SL.glm", "SL.glmnet", "SL.randomForest",
+                                          "SL.ksvm", "SL.earth"),
+                           gbound = .05)
 
-ampsurv.aipw.fit <- fitAIPWE(clti, "ampMort2yr", covar.names)
+ampsurv.aipw.fit <- fitAIPWE(clti, "ampMort2yr", covar.names, lambda.to.use = "lambda.1se")
 mort.aipw.fit <- fitAIPWE(clti, "mort2yr", covar.names)
 amp.aipw.fit <- fitAIPWE(clti, "majorAmp2yr", covar.names)
 mace.aipw.fit <- fitAIPWE(clti, "mace2yr", covar.names)
+```
+
+```{r aim2_aipw_boot, cache=TRUE}
+ampsurv.aipw.boot <- boot(data = clti, statistic = calcAIPWate, R = 500, 
+                          outcome.name = "ampMort2yr", 
+                          cov.names = covar.names, lambda.to.use = "lambda.1se")  
+```
+
+
+```{r aim2_mort_boot, cache=TRUE, eval = FALSE}
+mort.aipw.boot <- boot(data = clti, statistic = calcAIPWate, R = 100, 
+                          outcome.name = "mort2yr", 
+                          cov.names = covar.names, lambda.to.use = "lambda.1se")  
+```
+
+
+```{r aim2_amp_boot, cache=TRUE, eval=FALSE}
+amp.aipw.boot <- boot(data = clti, statistic = calcAIPWate, R = 100, 
+                          outcome.name = "majorAmp2yr", 
+                          cov.names = covar.names, lambda.to.use = "lambda.1se")  
+```
+
+
+```{r aim2_mace_boot, cache=TRUE, eval = FALSE}
+mace.aipw.boot <- boot(data = clti, statistic = calcAIPWate, R = 100, 
+                          outcome.name = "mace2yr", 
+                          cov.names = covar.names, lambda.to.use = "lambda.1se")  
 ```
 
 ```{r aim2_plot}
@@ -300,11 +364,15 @@ unadj.results <- rbind(c(coef(ampsurv.unadj)[2], ampsurv.sandwich.se[2]),
                        c(coef(mort.unadj)[2], mort.sandwich.se[2]),
                        c(coef(amp.unadj)[2], amp.sandwich.se[2]),
                        c(coef(mace.unadj)[2], mace.sandwich.se[2]))
+aipw.results <- rbind(c(ampsurv.aipw.boot$t0, sd(ampsurv.aipw.boot$t)))
+                      #c(mort.aipw.boot$t0, sd(mort.aipw.boot$t)),
+                      #c(amp.aipw.boot$t0, sd(amp.aipw.boot$t)),
+                      #c(mace.aipw.boot$t0, sd(mace.aipw.boot$t)))
 
-results.sum.df <- as.data.frame(rbind(unadj.results, ctmle.ests))
+results.sum.df <- as.data.frame(rbind(unadj.results, ctmle.ests, aipw.results))
 names(results.sum.df) <- c("RD.hat", "se")
-results.sum.df$Outcome <- c("Amp or Death", "Death", "Amputation", "MACE", "Amp or Death", "Death", "Amputation", "MACE")
-results.sum.df$Method <- c(rep("Unadjusted", 4), rep("CTMLE", 4))
+results.sum.df$Outcome <- rep(c("Amp or Death", "Death", "Amputation", "MACE"), times = 3)[1:9]
+results.sum.df$Method <- c(rep("Unadjusted", 4), rep("CTMLE", 4), rep("AIPW",1))
 results.sum.df %<>% arrange(Outcome)
 results.sum.df %<>% mutate(Lower = RD.hat - 1.96*se,
                            Upper = RD.hat + 1.96*se)

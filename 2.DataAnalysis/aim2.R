@@ -3,6 +3,8 @@
 ## c-TMLE
 #########################################################
 
+#' Wrapper function for fitting CTMLE using the 
+#' 
 fitCTMLE <- function(study.data, outcome.name, cov.names, ...){
   dat.nomiss <- study.data[complete.cases(study.data),]
   cov.df <- dat.nomiss %>% select(all_of(cov.names))
@@ -60,21 +62,51 @@ fitAIPWE <- function(study.data, outcome.name, cov.names, lambda.to.use = "lambd
   main.candidate.mat <- model.matrix(~ . + .*primaryTreatmentInt, data.frame(main.candidate.mat))
   main.cv <- cv.glmnet(x = main.candidate.mat, y = study.data$ampFreeSurv2yr, family="binomial")
   main.coef <- coef(main.cv, s = lambda.to.use) %>% as.matrix()
-  nonzero.main.var.names <- (rownames(main.coef)[main.coef != 0])[-1]
   
-  
+  nonzero.var.names <- (rownames(main.coef)[main.coef != 0])[-1]
+  nonzero.main.var.names <- nonzero.var.names[str_detect(nonzero.var.names, pattern = ":", negate = TRUE)]
+  nonzero.interaction.var.names <- nonzero.var.names[str_detect(nonzero.var.names, pattern = ":")] %>% 
+    strsplit(., split = ":") %>% unlist()
+  nonzero.interaction.var.names <- nonzero.interaction.var.names[str_detect(nonzero.interaction.var.names, pattern = "primaryTreatmentInt", negate = TRUE)]
   
   ## Construct the component models
   
   prop.mod.formula <- formula(paste(c("~ 1", nonzero.prop.var.names), collapse = " + "))
-  main.mod.formula <- formula(paste(c("~ 1", nonzero.main.var.names), sep = "+", collapse = " + "))
+  main.mod.string <- paste(c("~ 1", nonzero.main.var.names), sep = "+", collapse = " + ")
+  main.mod.formula <- formula(main.mod.string)
+  cont.mod.string <- paste(c("~ 1", nonzero.interaction.var.names), sep = "+", collapse = " + ")
+  
+  #print(main.mod.string)
+  #print(cont.mod.string)
+  
+  if(cont.mod.string == "~ 1"){
+    # This is kind of goofy but DynTxRegime doesn't seem to like it if Contmod is intercept only and throws an error
+    # Solution: take the first nonzero term(s)
+    main.lasso <- glmnet(x = main.candidate.mat, y = study.data$ampFreeSurv2yr, family="binomial")
+    # Get the coefficient path for the interaction variables
+    int.vars <- main.lasso$beta[str_detect(rownames(main.lasso$beta), ":"),]
+    cur.index <- 1
+    cont.mod.string <- NULL
+    while(is.null(cont.mod.string)){
+      if(all(int.vars[,cur.index] == 0)){
+        cur.index <- cur.index + 1
+        next()
+      } else{
+        nonzero.interaction.var.names <- rownames(int.vars)[int.vars[,cur.index] != 0] %>% 
+          strsplit(., split = ":") %>% unlist()
+        nonzero.interaction.var.names <- nonzero.interaction.var.names[str_detect(nonzero.interaction.var.names, pattern = "primaryTreatmentInt", negate = TRUE)]
+        cont.mod.string <- paste(c("~ 1", nonzero.interaction.var.names), sep = "+", collapse = " + ")
+      }
+    }
+  }
+  cont.mod.formula <- formula(cont.mod.string)
   
   mean.mod <- buildModelObj(model = main.mod.formula, 
                             solver.method = "glm", 
                             solver.args = list(family = "binomial"),
                             predict.method = "predict.glm",
                             predict.args = list(type = "response"))
-  cont.mod <- buildModelObj(model = ~ 1 + SMOKING + anyAnemia, 
+  cont.mod <- buildModelObj(model = cont.mod.formula, 
                             solver.method = "glm", 
                             solver.args = list(family = "binomial"),
                             predict.method = "predict.glm",
@@ -93,16 +125,40 @@ fitAIPWE <- function(study.data, outcome.name, cov.names, lambda.to.use = "lambd
   
   aipw.fit <- earl(moPropen = prop.mod, 
                            moMain = mean.mod,
-                           moCont = mean.mod,
+                           moCont = cont.mod,
                            data = study.df, 
                            response = study.data %>% pull(!!out.sym),  
                            txName = "primaryTreatmentInt",
-                           regime =main.mod.formula,
+                           regime =cont.mod.formula,
                            iter = 0L,
                            verbose = FALSE)
   return(aipw.fit)
 }
 
+calcAIPWate <- function(in.data, outcome.name, cov.names, ...){
+  aipw.fit <- fitAIPWE(study.data = in.data, outcome.name = outcome.name, cov.names = cov.names, ...)
+  aipw.outcome.mod <- outcome(aipw.fit)$Combined
+  # Make counterfactual datasets
+  counterfac.data.all.wm <- in.data %>% mutate(primaryTreatmentInt = 1) %>% as.data.frame()
+  counterfac.data.all.revasc <- in.data %>% mutate(primaryTreatmentInt = 0) %>% as.data.frame()
+  
+  #Get predicted outcomes and get predicted probability
+  pred.prob.wm <- boot::inv.logit(predict(aipw.outcome.mod, newdata = counterfac.data.all.wm))
+  pred.prob.revasc <- boot::inv.logit(predict(aipw.outcome.mod, newdata = counterfac.data.all.revasc))
+  
+  ate <- mean(pred.prob.wm - pred.prob.revasc)
+  return(ate)
+}
+
+aipwBootWrapper <- function(in.data, n.boot, outcome.name, cov.names, ...){
+  ate.vec <- vector(length = n.boot)
+  for(i in 1:n.boot){
+    boot.indices <- sample(1:nrow(in.data), size = nrow(in.data), replace = TRUE)
+    cur.boot.data <- clti[boot.indices,]
+    ate.vec[i] <- calcAIPWate(in.data = cur.boot.data, outcome.name = outcome.name, cov.names = cov.names)
+  }
+  return(ate.vec)
+}
 
 #########################################################
 ## Diagnostics
